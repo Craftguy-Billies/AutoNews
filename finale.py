@@ -25,7 +25,7 @@ splitcount = 3  # recommend 3 or below, otherwise article translate may stop wit
 
 client = OpenAI(
   base_url = "https://integrate.api.nvidia.com/v1",
-  api_key = "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"
+  api_key = "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"
 )
 
 # Environment Variables
