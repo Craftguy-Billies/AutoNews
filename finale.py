@@ -16,9 +16,6 @@ from typing_extensions import TypedDict
 import os
 import time
 import re
-from icrawler.builtin import GoogleImageCrawler
-from icrawler.builtin import FlickrImageCrawler
-from icrawler.downloader import ImageDownloader
 import iii
 
 DEBUG = False
