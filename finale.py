@@ -25,7 +25,7 @@ splitcount = 3  # recommend 3 or below, otherwise article translate may stop wit
 
 client = OpenAI(
   base_url = "https://integrate.api.nvidia.com/v1",
-  api_key = "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"
+  api_key = "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"
 )
 
 # Environment Variables
@@ -1082,7 +1082,7 @@ def generate_toc(html_article):
     
     return toc
 
-def taoke(headers, max_retries=3, delay=5):
+def taoke(headers, max_retries=3, retry_delay=5):
     global prompt_count
     prompt_count = prompt_count + 1
     prompt = f"""
@@ -1109,7 +1109,7 @@ def taoke(headers, max_retries=3, delay=5):
             )
 
             for chunk in completion:
-                if chunk.choices[0].delta.content is not None:
+                if chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content.encode('utf-8', errors='ignore').decode('utf-8')
                     e_head += content
 
