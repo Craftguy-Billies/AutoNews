@@ -384,6 +384,7 @@ dict_chain = NvidiaLLMChain(
 # List of RSS feed URLs
 rss_urls = [
     'https://www.scmp.com/rss/2/feed'
+    'https://www.scmp.com/rss/30/feed'
     # Add more RSS feed URLs here
 ]
 
