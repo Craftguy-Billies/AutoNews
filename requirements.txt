@@ -1,6 +1,4 @@
 feedparser
-jsonlib
-ast
 openai
 trafilatura
 beautifulsoup4
@@ -11,8 +9,3 @@ langchain-core
 langchain-community
 langgraph
 typing-extensions
-os
-time
-re
-threading
-uuid
