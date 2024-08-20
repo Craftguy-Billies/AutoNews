@@ -25,7 +25,7 @@ splitcount = 3  # recommend 3 or below, otherwise article translate may stop wit
 
 client = OpenAI(
   base_url = "https://integrate.api.nvidia.com/v1",
-  api_key = "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"
+  api_key = "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"
 )
 
 # Environment Variables
@@ -383,8 +383,7 @@ dict_chain = NvidiaLLMChain(
 
 # List of RSS feed URLs
 rss_urls = [
-    #'https://www.france24.com/en/rss'
-    'https://www.scmp.com/rss/322899/feed'
+    'https://www.scmp.com/rss/2/feed'
     # Add more RSS feed URLs here
 ]
 
@@ -1082,7 +1081,7 @@ def generate_toc(html_article):
     
     return toc
 
-def taoke(headers, max_retries=3, retry_delay=5):
+def taoke(headers, max_retries=3, delay=5):
     global prompt_count
     prompt_count = prompt_count + 1
     prompt = f"""
@@ -1109,7 +1108,7 @@ def taoke(headers, max_retries=3, retry_delay=5):
             )
 
             for chunk in completion:
-                if chunk.choices[0].delta.content:
+                if chunk.choices[0].delta.content is not None:
                     content = chunk.choices[0].delta.content.encode('utf-8', errors='ignore').decode('utf-8')
                     e_head += content
 
@@ -1220,8 +1219,7 @@ def main():
         #parse_full_text("https://www.travelandleisure.com/travel-tips/basic-french-words-phrases", "Basic French Words, Phrases, and Sayings Every Traveler Should Know", lines, splitcount)
         #parse_full_text("https://medium.com/pythons-gurus/python-web-scraping-best-libraries-and-practices-86344aa3f703", "Python Web Scraping: Best Libraries and Practices", lines, splitcount)
         #parse_full_text(r"https://www.rfi.fr/tw/20180425-%E5%88%A5%E6%B4%9B%E9%9F%8B%E6%97%A5%E8%87%AA%E7%84%B6%E4%BF%9D%E8%AD%B7%E5%8D%80", "別洛韋日自然保護區", lines, splitcount)
-        #parse_full_text(r"https://www.scmp.com/magazines/style/luxury/jewellery/article/3273867/designer-lauren-khoo-10-years-shaking-jewellery-business?utm_source=rss_feed", "Designer Lauren Khoo on 10 years of shaking up the jewellery business", lines, splitcount)
-        news = news_items
+        news = url_check(news_items)
         print(news)
         file_path = "news.txt"
         for new in news:
