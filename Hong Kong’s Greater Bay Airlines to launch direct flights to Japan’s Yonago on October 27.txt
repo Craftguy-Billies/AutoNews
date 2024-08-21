@@ -1,0 +1,3 @@
+<h1>大灣區航空10月27日開通香港至日本米子的直航</h1>
+<img alt="Hong Kong Airport" src="images/Hong Kong Airport.jpg" style="max-width: 500px;"/>
+<img alt="Japan Airlines Plane" src="images/Japan Airlines Plane.jpg" style="max-width: 500px;"/>

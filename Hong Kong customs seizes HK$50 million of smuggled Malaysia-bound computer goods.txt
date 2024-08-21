@@ -1,0 +1,3 @@
+<h1>香港海關截獲價值5000萬港元的走私電子產品</h1>
+<img alt="seized electronics" src="images/seized electronics.jpg" style="max-width: 500px;"/>
+<img alt="customs inspection" src="images/customs inspection.jpg" style="max-width: 500px;"/>
