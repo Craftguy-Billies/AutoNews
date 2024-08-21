@@ -28,8 +28,8 @@ jobs:
           pip install -r requirements.txt  # Assuming you have a requirements.txt file
 
       # Runs your Python script
-      - name: Run AI News script
-        run: python finale.py
+      - name: Run AI 新聞筆 script
+        run: python 新聞筆.py
 
       - uses: stefanzweifel/git-auto-commit-action@v5
         id: auto-commit-action
