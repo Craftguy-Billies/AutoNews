@@ -8,15 +8,13 @@ import requests
 from IPython.display import display, Markdown, Latex
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-from langchain_community.chat_models import ChatOllama
-from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 import os
 import time
 import re
-import iii
+import threading
+import uuid
 
 DEBUG = False
 
@@ -33,11 +31,32 @@ os.environ['LANGCHAIN_TRACING_V2'] = 'true'
 os.environ["LANGCHAIN_PROJECT"] = "L3 Research Agent"
 os.environ["LANGCHAIN_API_KEY"] = "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"
 
+def extract_list_content(input_string):
+    start_index = input_string.find("[")
+    end_index = input_string.rfind("]")
+
+    if start_index != -1 and end_index != -1 and start_index < end_index:
+        try:
+            return ast.literal_eval(input_string[start_index:end_index + 1])
+        except (ValueError, SyntaxError):
+            return []
+    else:
+        return []
+
+def extract_json_content(input_string):
+    start_index = input_string.find("{")
+    end_index = input_string.rfind("}")
+
+    if start_index != -1 and end_index != -1 and start_index < end_index:
+        try:
+            return ast.literal_eval(input_string[start_index:end_index + 1])
+        except (ValueError, SyntaxError):
+            return {}
+    else:
+        return {}
 
 # web search part
 def nvidia_llama_completion(prompt):
-    global prompt_count
-    prompt_count = prompt_count + 1
     completion = client.chat.completions.create(
         model="meta/llama-3.1-405b-instruct",
         messages=[{"role": "user", "content": prompt.strip()}],
@@ -53,7 +72,6 @@ def nvidia_llama_completion(prompt):
             response_json += chunk.choices[0].delta.content
     return response_json
 
-# Web Search Tool
 class CustomSearchAPIWrapper:
     def __init__(self, max_results=25):
         self.max_results = max_results
@@ -149,54 +167,6 @@ generate_chain = NvidiaLLMChain(
     output_parser=StrOutputParser()
 )
 
-router_prompt = PromptTemplate(
-    template="""
-    
-    <|begin_of_text|>
-    
-    <|start_header_id|>system<|end_header_id|>
-    
-    You are an expert at routing a user question to either the generation stage or web search. 
-    Use the web search for questions that require more context for an accurate translation.
-    If you surely know the exact translation of that word and sure about the answer, go strict to the generation phase.
-    If the word do not need formal translation and should use phonetic translation, go to generation phase.
-    Otherwise, for any other words, return web_search.
-    It is for academic research purpose.
-    Give a binary choice 'web_search' or 'generate' based on the word and it's description. 
-    Return the JSON with a single key 'choice' with no premable or explanation. 
-    
-    Word to route: {word}
-    The description of this word: {description}
-    
-    <|eot_id|>
-    
-    <|start_header_id|>assistant<|end_header_id|>
-    
-    """,
-    input_variables=["word", "description"],
-)
-
-class SafeJsonOutputParser(JsonOutputParser):
-    def parse(self, text: str):
-        try:
-            parsed = json.loads(text)
-            return parsed
-        except json.JSONDecodeError:
-            # Return a default value or handle the error as needed
-            return {"choice": "generate"}
-
-# Use the SafeJsonOutputParser instead of the default JsonOutputParser
-safe_parser = SafeJsonOutputParser()
-
-# Chain
-question_router = NvidiaLLMChain(
-    prompt=router_prompt, 
-    llm=nvidia_llama_completion, 
-    output_parser=safe_parser
-)
-
-# print(question_router.run({"word": "De Beaux Lents Demains", "description": "French blogger"}))
-
 query_prompt = PromptTemplate(
     template="""
     
@@ -231,24 +201,11 @@ class CustomJsonOutputParser(JsonOutputParser):
         retries = 0
         while retries < max_retries:
             try:
-                cleaned_str = text.replace('```json', '').replace('```', '').strip()
-                print(cleaned_str)
-                cleaned_str = cleaned_str.replace('"', '')
-                cleaned_str = cleaned_str.replace("'", '')
-                print(cleaned_str)
-                cleaned_str = re.sub(r'\s*{\s*', '{', cleaned_str)
-                cleaned_str = re.sub(r'\s*}\s*', '}', cleaned_str)
-                cleaned_str = re.sub(r'\s*:\s*', ':', cleaned_str)
-                print(cleaned_str)
-                cleaned_str = cleaned_str.replace('{','{"').replace('}','"}').replace(':','":"')
-                cleaned_str = re.sub(r'\\(?!u)', '', cleaned_str)
-                print(cleaned_str)
-                #cleaned_str = cleaned_str.replace('{', '{"').replace('}', '"}').replace(':', '":"')
-                modified_string = json.loads(cleaned_str)
+                modified_string = extract_json_content(text)
                 return modified_string
-            except json.JSONDecodeError as e:
+            except Exception as e:
                 retries += 1
-                print(f"JSON decode error: {e}. Retrying {retries}/{max_retries}...")
+                print(f"Error: {e}. Retrying {retries}/{max_retries}...")
         
         return {"query": ""}
 
@@ -259,9 +216,6 @@ query_chain = NvidiaLLMChain(
     output_parser=CustomJsonOutputParser(max_retries=3)
 )
 
-# print(query_chain.run({"word": "Les Zed", "description": "French blogger or influencer"}))
-
-# Graph State
 class GraphState(TypedDict):
     word : str
     description: str
@@ -299,42 +253,19 @@ def web_search(state):
     search_result = web_search_tool.invoke(search_query)
     return {"context": search_result}
 
-# Conditional Edge, Routing
-def route_question(state):
-    print("Step: Routing Query")
-    word = state['word']
-    description = state['description']
-    output = question_router.run({"word": word, "description": description})
-    if isinstance(output, dict):
-        if output['choice'] == "web_search":
-            print("Step: Routing Query to Web Search")
-            return "websearch"
-        elif output['choice'] == 'generate':
-            print("Step: Routing Query to Generation")
-            return "generate"
-    else:
-        print("Step: Routing Query to Generation")
-        return "generate"
 # Build the nodes
 workflow = StateGraph(GraphState)
-workflow.add_node("websearch", web_search)
-workflow.add_node("transform_query", transform_query)
-workflow.add_node("generate", generate)
+workflow.add_node("websearch", web_search) 
+workflow.add_node("transform_query", transform_query)  
+workflow.add_node("generate", generate)  
 
-# Build the edges
-workflow.set_conditional_entry_point(
-    route_question,
-    {
-        "websearch": "transform_query",
-        "generate": "generate",
-    },
-)
-workflow.add_edge("transform_query", "websearch")
-workflow.add_edge("websearch", "generate")
-workflow.add_edge("generate", END)
+workflow.set_entry_point("transform_query")
 
-# Compile the workflow
+workflow.add_edge("transform_query", "websearch") 
+workflow.add_edge("websearch", "generate")  
+workflow.add_edge("generate", END)  
 local_agent = workflow.compile()
+
 def run_agent(query, original_word):
     output = local_agent.invoke({"word": original_word, "description": query})
     display(output["generation"])
@@ -342,7 +273,6 @@ def run_agent(query, original_word):
     translated_json = dict_chain.run({"original_word": str(original_word), "search_result": search_result})
     return translated_json
 
-#run_agent("Vimara Village is a subarea located in Ardravi Valley, Dharma Forest, Sumeru", "Vimara Village")
 dict_prompt = PromptTemplate(
     template="""
     
@@ -381,14 +311,11 @@ dict_chain = NvidiaLLMChain(
     output_parser=JsonOutputParser()
 )
 
-# List of RSS feed URLs
 rss_urls = [
     'https://www.scmp.com/rss/2/feed'
-    'https://www.scmp.com/rss/30/feed'
     # Add more RSS feed URLs here
 ]
 
-# Function to fetch and parse RSS feeds
 def fetch_news(rss_urls):
     news_items = []
     seen_titles = set()
@@ -408,144 +335,13 @@ def fetch_news(rss_urls):
 
     return news_items
 
-# Fetch news from RSS feeds
 news_items = fetch_news(rss_urls)
 
-def count_newlines_exceeds_limit(text: str, limit: int = 5) -> bool:
-    # Count the number of new line characters in the text
-    newline_count = text.count('\n')
-    # Check if the count exceeds the specified limit
-    return newline_count > limit
-
-def extract_headers_and_content(article):
-    # Parse the article with BeautifulSoup
-    soup = BeautifulSoup(article, 'html.parser')
-    
-    # Initialize a list to store the headers and associated content
-    content_dict = {}
-    
-    # Find all headers
-    headers = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-    
-    # Iterate through headers to get their content
-    for i, header in enumerate(headers):
-        header_tag = header.name
-        header_text = header.get_text()
-        
-        # Find the next header to determine the content range
-        if i + 1 < len(headers):
-            next_header = headers[i + 1]
-            content = ''
-            for sibling in header.next_siblings:
-                if sibling == next_header:
-                    break
-                if sibling.name:
-                    content += str(sibling)
-        else:
-            # For the last header, take all remaining content
-            content = ''
-            for sibling in header.next_siblings:
-                if sibling.name:
-                    content += str(sibling)
-        
-        content_dict[(header_tag, header_text)] = content
-    
-    return content_dict
-
-def extract_headers_and_content_from_list(html_list):
-    # Initialize a dictionary to store the headers and associated content
-    content_dict = {}
-    
-    # Convert the list to a single string of HTML
-    combined_html = ''.join(html_list)
-    
-    # Parse the combined HTML with BeautifulSoup
-    soup = BeautifulSoup(combined_html, 'html.parser')
-    
-    # Find all headers
-    headers = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-    
-    # Iterate through headers to get their content
-    for i, header in enumerate(headers):
-        header_tag = header.name
-        header_text = header.get_text()
-        
-        # Find the next header to determine the content range
-        if i + 1 < len(headers):
-            next_header = headers[i + 1]
-            content = ''
-            for sibling in header.next_siblings:
-                if sibling == next_header:
-                    break
-                if sibling.name:
-                    content += str(sibling)
-        else:
-            # For the last header, take all remaining content
-            content = ''
-            for sibling in header.next_siblings:
-                if sibling.name:
-                    content += str(sibling)
-        
-        content_dict[(header_tag, header_text)] = content
-    
-    return content_dict
-
-def format_html_with_newlines(html):
-    """Format the HTML string with new lines after each closing tag."""
-    soup = BeautifulSoup(html, 'html.parser')
-    pretty_html = soup.prettify()
-    return pretty_html
-
-def modify_content(dict1, dict2, toc=None):
-    merged_html = ''
-    
-    # Extract headers from both dictionaries
-    headers1 = list(dict1.keys())
-    headers2 = list(dict2.keys())
-    
-    i, j = 0, 0
-    while i < len(headers1) and j < len(headers2):
-        header1, header2 = headers1[i], headers2[j]
-        
-        # Check if headers are the same
-        if header1[0] == header2[0]:
-            # Append the header in HTML form
-            merged_html += f'<{header1[0]}>{header1[1]}</{header1[0]}>\n'
-            
-            # Append the formatted content of the header from list 1 and then from list 2
-            merged_html += format_html_with_newlines(dict1[header1]) + '\n'
-            if header1[0] == "h1" and toc is not None:
-                merged_html += format_html_with_newlines(toc) + '\n'
-            merged_html += format_html_with_newlines(dict2[header2]) + '\n'
-            
-            i += 1
-            j += 1
-        elif header1 < header2:
-            # Append the header and formatted content from list 1
-            merged_html += f'<{header1[0]}>{header1[1]}</{header1[0]}>\n'
-            merged_html += format_html_with_newlines(dict1[header1]) + '\n'
-            i += 1
-        else:
-            # Append the header and formatted content from list 2
-            merged_html += f'<{header2[0]}>{header2[1]}</{header2[0]}>\n'
-            merged_html += format_html_with_newlines(dict2[header2]) + '\n'
-            j += 1
-    
-    # Append remaining headers from list 1
-    while i < len(headers1):
-        header1 = headers1[i]
-        merged_html += f'<{header1[0]}>{header1[1]}</{header1[0]}>\n'
-        merged_html += format_html_with_newlines(dict1[header1]) + '\n'
-        i += 1
-    
-    # Append remaining headers from list 2
-    while j < len(headers2):
-        header2 = headers2[j]
-        merged_html += f'<{header2[0]}>{header2[1]}</{header2[0]}>\n'
-        merged_html += format_html_with_newlines(dict2[header2]) + '\n'
-        j += 1
-    
-    return merged_html
+def split_article_into_segments(article, lines_per_segment=13):
+    lines = article.split('\n')
+    segments = [lines[i:i + lines_per_segment] for i in range(0, len(lines), lines_per_segment)]
+    print(segments)
+    return segments
 
 def read_file(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
@@ -559,148 +355,10 @@ def write_file(file_path, content):
         file.writelines(content)
         file.writelines("</div></body></html>")
 
-def extract_alt_attributes(html_content):
-    # Parse the HTML content with BeautifulSoup
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Find all img tags and extract the alt attributes
-    alt_attributes = [img['alt'] for img in soup.find_all('img') if 'alt' in img.attrs]
-    
-    return alt_attributes
+def count_newlines_exceeds_limit(text: str, limit: int = 5) -> bool:
+    newline_count = text.count('\n')
+    return newline_count > limit
 
-def add_max_width_to_images(html_content, max_width):
-    # Parse the HTML content with BeautifulSoup
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Find all img tags and add a max-width style attribute
-    for img in soup.find_all('img'):
-        if 'style' in img.attrs:
-            img['style'] += f'; max-width: {max_width};'
-        else:
-            img['style'] = f'max-width: {max_width};'
-    
-    # Return the modified HTML as a string
-    return str(soup)
-
-def clean_title(title, extension):
-    # Define invalid characters for filenames
-    invalid_chars = r'[<>:"/\\|?*]'
-    
-    # Replace invalid characters with an underscore
-    clean_title = re.sub(invalid_chars, '_', title)
-    
-    # Remove leading and trailing whitespace
-    clean_title = clean_title.strip()
-    
-    # Check for reserved names (specific to Windows)
-    reserved_names = {"CON", "PRN", "AUX", "NUL", "COM1", "LPT1"}
-    if clean_title.upper() in reserved_names:
-        clean_title = f"{clean_title}_file"
-    
-    # Ensure the title is not empty
-    if not clean_title:
-        clean_title = "default_filename"
-    
-    # Append the file extension, ensuring it starts with a dot
-    if not extension.startswith('.'):
-        extension = f".{extension}"
-    
-    # Construct the full file name
-    file_name = f"{clean_title}{extension}"
-    
-    return file_name
-
-def update_image_sources(html_content):
-    # Parse the HTML content with BeautifulSoup
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Find all img tags and update the src attribute
-    for img in soup.find_all('img'):
-        if 'src' in img.attrs:
-            original_src = img['src']
-            new_src = os.path.join('images', os.path.basename(original_src))
-            img['src'] = new_src
-    
-    # Return the modified HTML as a string
-    return str(soup)
-# the core of generation logic
-def parse_full_text(url, title, lines = 14, splitcount = 3):
-    full_article = ""
-    big_arr = []
-
-    # grab all the main content with trafilatura
-    print(url)
-    downloaded = trafilatura.fetch_url(url)
-    website_text = trafilatura.extract(downloaded)
-
-    if website_text is None:
-        print("Failed to scrap, skipped this URL.")
-        return
-
-    if not count_newlines_exceeds_limit(website_text):
-        print(website_text)
-        print("Bad formatting, skipped this URL.")
-        return
-
-    if website_text:
-        # Split the article into segments
-        segments = split_article_into_segments(website_text, lines_per_segment=lines)
-
-        # Process each segment
-        article_array, segmented_json = process_segments(segments, title)
-
-        print(article_array)
-
-        if article_array:  # Ensure article_array is not empty or None
-            big_arr = split_on_every_nth_h2(article_array, n=splitcount)
-
-    for arr in big_arr:
-        full_article += consideration_test(arr, title, segmented_json)
-        full_article += "\n"
-
-    # remove unrelated role content and promotional parts
-    finale = article_checker(full_article)
-    links = []
-    txt_filename = f'{title}.txt'
-
-    # generate a structure with img and headers only
-    heads = extract_headers(finale)
-    ke = taoke(heads)
-    alt_texts = extract_alt_attributes(ke)
-    max_height = '500px'
-    ke = add_max_width_to_images(ke, max_height)
-    ke = update_image_sources(ke)
-    for alt in alt_texts:
-        iii.download_unsplash_images(alt) 
-    file_path = clean_title(title, 'txt')
-    with open(file_path, 'w', encoding='utf-8') as file:
-        file.write(ke)
-    print(ke)
-    with open(file_path, 'r', encoding='utf-8') as file:
-        print(file.read())
-
-    # programming to put all back into one article
-    content = read_file(file_path)
-    dict1 = extract_headers_and_content_from_list(content)
-    dict2 = extract_headers_and_content(finale)
-    if len(extract_headers(finale)) > 5:
-        toc = generate_toc(finale)
-    else:
-        toc = None
-    modified_content = modify_content(dict1, dict2, toc)
-    file_path = clean_title(title, 'html')
-    write_file(file_path, modified_content)
-
-    print("++++++++++++++++++++++++++++++++++++++++++++++++")
-    print("Finished processing, prompt count: " + str(prompt_count))
-
-def split_article_into_segments(article, lines_per_segment=13):
-    lines = article.split('\n')
-    segments = [lines[i:i + lines_per_segment] for i in range(0, len(lines), lines_per_segment)]
-    print(segments)
-    return segments
-
-# Define the function to check if p_segment is defined and not empty
 def check_variable(var_name, context):
     if var_name in context and context[var_name]:
         variable = context[var_name]
@@ -721,37 +379,7 @@ def check_dict(var_name, seg_dict):
     else:
         return ""
 
-def parse(text):
-    modified_string = text.replace("'", '')
-    modified_string = modified_string.replace('"', '')
-    modified_string = modified_string.replace("\\'", "")  # Replace escaped single quotes
-    modified_string = modified_string.replace('\\"', '')  # Replace escaped double quotes
-    modified_string = modified_string.replace("\\\\", "")
-    modified_string = modified_string.replace(r'{},', '')
-    modified_string = modified_string.replace('\n', '')
-    modified_string = modified_string.replace('6:', '6":"').replace('5:', '5":"').replace('4:', '4":"').replace('3:', '3":"').replace('2:', '2":"').replace('1:', '1":"').replace('p:', 'p":"').replace('g:', 'g":"').replace('i:', 'i":"')
-    modified_string = modified_string.replace('{', '{"').replace('}', '"}')
-    modified_string = json.loads(modified_string)
-    return modified_string
-
-def is_dict_or_json(input_data):
-    # Check if the input is a dictionary
-    if isinstance(input_data, dict):
-        return True
-    
-    # Try to parse it as JSON
-    try:
-        parsed_json = json.loads(input_data)
-        if isinstance(parsed_json, dict):
-            return True
-    except (ValueError, TypeError):
-        return False
-    
-    return False
-
-# Define the function to process segments
 def process_segments(segments, title, max_retries=3):
-    global prompt_count
     article_array = []
     segmented_json = {}
     context = {}
@@ -788,7 +416,6 @@ def process_segments(segments, title, max_retries=3):
 
         while retries < max_retries and not success:
             try:
-                prompt_count = prompt_count + 1
                 completion = client.chat.completions.create(
                     model="meta/llama-3.1-405b-instruct",
                     messages=[{"role": "user", "content": prompt.strip()}],
@@ -808,7 +435,7 @@ def process_segments(segments, title, max_retries=3):
             except json.JSONDecodeError as e:
                 print(f"JSON decode error: {e}")
                 retries += 1
-                time.sleep(2)  # Optional: Add a delay before retrying
+                time.sleep(2)
                 response_json = ""
 
         if not success:
@@ -816,13 +443,10 @@ def process_segments(segments, title, max_retries=3):
             continue
 
         refined = refine_response(response_array, p_dict)
-        print(refined)
-        if refined is not None and is_dict_or_json(refined):
+        if refined is not None:
             segmented_dict = {}
             for word, prompt in refined.items():
                 dictionary = run_agent(prompt, word)
-                print(dictionary)
-                print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
                 segmented_dict.update(dictionary)
                 if len(segmented_dict) != 0:
                     print(segmented_dict)
@@ -837,8 +461,6 @@ def process_segments(segments, title, max_retries=3):
 
 # Define the refinement prompt
 def refine_response(response_json, translated):
-    global prompt_count
-    prompt_count = prompt_count + 1
     prompt = f"""
     You have processed the segment and returned a JSON array. Now, I need you to refine this output by ensuring it follows all the instructions properly.
 
@@ -880,42 +502,11 @@ def refine_response(response_json, translated):
 
     if refined_response:
         if str(refined_response).lower() != "none":
-            refined_response_json = ast.literal_eval(refined_response.strip('`\n'))
+            refined_response_json = extract_json_content(refined_response)
             return refined_response_json
         return None
 
     return None
-
-def parse_multiline_string_to_array(multiline_string):
-    # Clean up the multiline string
-    multiline_string = multiline_string.strip()
-
-    # Add a try-except block to catch JSONDecodeError
-    try:
-        # Ensure multiline_string is not empty or invalid
-        if not multiline_string:
-            return []
-
-        # Try to parse the JSON
-        json_array = json.loads(multiline_string)
-
-        # Check for empty objects within the JSON array and handle them
-        cleaned_json_array = [obj for obj in json_array if obj]
-        if len(cleaned_json_array) != len(json_array):
-            return cleaned_json_array
-
-    except json.JSONDecodeError as e:
-        print(f"JSONDecodeError: {e}")
-        return []
-
-    return json_array
-
-def combine_json_arrays(json_arrays):
-    combined_array = []
-    for json_array in json_arrays:
-        combined_array.extend(json_array)
-
-    return combined_array
 
 def split_on_every_nth_h2(json_array, n=2):
     count_headers = 0
@@ -941,17 +532,7 @@ def split_on_every_nth_h2(json_array, n=2):
 
     return all_subarrays
 
-def length_detection(text):
-    lines = text.split('\n')
-    return len([line for line in lines if line.strip()]) > 20
-
-def format_headers(segment):
-    headers = [f"{key}: {value}" for item in segment for key, value in item.items()]
-    return "\n".join(headers)
-
 def consideration_test(headers, title, dictionary):
-    global prompt_count
-    prompt_count = prompt_count + 1
     full_article = ""
     prompt = f"""
     以下的array包括了h1, h2, p, img 和 li 等的tag. 文章的大標題是{title}。給我整理成一篇文章。改寫並翻譯成香港語氣的中文版本。
@@ -993,10 +574,8 @@ def consideration_test(headers, title, dictionary):
 
 def article_checker(article, max_retries=3, retry_delay=5):
     full_article = ""
-    global prompt_count
     processes = split_article_into_segments(article, lines_per_segment=25)
     for process in processes:
-        prompt_count = prompt_count + 1
         prompt = f"""
         現在我有一篇文章。當中有一些部分需要你刪除和改寫。
         文章：{process}
@@ -1052,39 +631,12 @@ def article_checker(article, max_retries=3, retry_delay=5):
     return full_article
 
 def extract_headers(article):
-    # Parse the article with BeautifulSoup
     soup = BeautifulSoup(article, 'html.parser')
-    
-    # Find all header tags (h1, h2, h3, h4, h5, h6)
     headers = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-    
-    # Extract the tag name and content
     header_contents = [(header.name, header.get_text()) for header in headers]
-    
     return header_contents
 
-def generate_toc(html_article):
-    headers = extract_headers(html_article)
-    
-    # Start the TOC list
-    toc = '<nav class="toc">\n<ul class="list-group">\n'
-    
-    for tag, content in headers:
-        if tag == 'h1':
-            toc += f'<li class="list-group-item">{content}</li>\n'
-        elif tag == 'h2':
-            toc += f'<ul class="list-group">\n<li class="list-group-item ml-3">{content}</li>\n</ul>\n'
-        else:
-            toc += f'<ul class="list-group">\n<ul class="list-group">\n<li class="list-group-item ml-5">{content}</li>\n</ul>\n</ul>\n'
-    
-    # End the TOC list
-    toc += '</ul>\n</nav>\n'
-    
-    return toc
-
-def taoke(headers, max_retries=3, delay=5):
-    global prompt_count
-    prompt_count = prompt_count + 1
+def taoke(headers):
     prompt = f"""
     我會給你一篇文章的header tags。幫我把這些tags中中文辭不合理的部分改寫，非中文的部分就不要改動或翻譯。然後返回一個相同的html structure給我即可。
     headers: {headers}
@@ -1092,37 +644,22 @@ def taoke(headers, max_retries=3, delay=5):
     不要回覆我任何其它字，我只需要處理好的中文的html structure回覆。
     """
 
-    retries = 0
-    success = False
     e_head = ""
 
-    while retries < max_retries and not success:
-        try:
-            print(prompt)
-            completion = client.chat.completions.create(
-                model="meta/llama-3.1-405b-instruct",
-                messages=[{"role": "user", "content": prompt.strip()}],
-                temperature=0.2,
-                top_p=0.7,
-                max_tokens=8192,
-                stream=True
-            )
+    print(prompt)
+    completion = client.chat.completions.create(
+        model="meta/llama-3.1-405b-instruct",
+        messages=[{"role": "user", "content": prompt.strip()}],
+        temperature=0.2,
+        top_p=0.7,
+        max_tokens=8192,
+        stream=True
+    )
 
-            for chunk in completion:
-                if chunk.choices[0].delta.content is not None:
-                    content = chunk.choices[0].delta.content.encode('utf-8', errors='ignore').decode('utf-8')
-                    e_head += content
-
-            success = True
-
-        except Exception as e:
-            print(f"Error: {e}")
-            retries += 1
-            if retries < max_retries:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-            else:
-                print("Max retries reached. Moving to next segment.")
+    for chunk in completion:
+        if chunk.choices[0].delta.content is not None:
+            content = chunk.choices[0].delta.content
+            e_head += content
 
     ke = f"""
     我會給你一篇文章的header tags。幫我在相對應的地方增加img tag。每個header最好加兩個img tag。
@@ -1136,44 +673,391 @@ def taoke(headers, max_retries=3, delay=5):
     不要回覆我任何其它字，我只需要處理好的中文的html structure回覆。
     """
 
-    retries = 0
-    success = False
     content = ""
     the_ke = ""
 
-    while retries < max_retries and not success:
-        try:
-            print(prompt)
-            completion = client.chat.completions.create(
-                model="meta/llama-3.1-405b-instruct",
-                messages=[{"role": "user", "content": ke.strip()}],
-                temperature=0.2,
-                top_p=0.7,
-                max_tokens=8192,
-                stream=True
-            )
+    completion = client.chat.completions.create(
+        model="meta/llama-3.1-405b-instruct",
+        messages=[{"role": "user", "content": ke.strip()}],
+        temperature=0.2,
+        top_p=0.7,
+        max_tokens=8192,
+        stream=True
+    )
 
-            for chunk in completion:
-                if chunk.choices[0].delta.content is not None:
-                    content = chunk.choices[0].delta.content.encode('utf-8', errors='ignore').decode('utf-8')
-                    the_ke += content
-
-            success = True
-
-        except Exception as e:
-            print(f"Error: {e}")
-            retries += 1
-            if retries < max_retries:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-            else:
-                print("Max retries reached. Moving to next segment.")
+    for chunk in completion:
+        if chunk.choices[0].delta.content is not None:
+            content = chunk.choices[0].delta.content
+            the_ke += content
 
     return the_ke
 
+def extract_alt_attributes(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    alt_attributes = [img['alt'] for img in soup.find_all('img') if 'alt' in img.attrs]
+    return alt_attributes
+
+def add_max_width_to_images(html_content, max_width):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    for img in soup.find_all('img'):
+        if 'style' in img.attrs:
+            img['style'] += f'; max-width: {max_width};'
+        else:
+            img['style'] = f'max-width: {max_width};'
+    return str(soup)
+
+def update_image_sources(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    for img in soup.find_all('img'):
+        if 'src' in img.attrs:
+            original_src = img['src']
+            new_src = os.path.join('images', os.path.basename(original_src))
+            img['src'] = new_src
+    return str(soup)
+
+def clean_title(title, extension):
+    invalid_chars = r'[<>:"/\\|?*]'
+    clean_title = re.sub(invalid_chars, '_', title)
+    clean_title = clean_title.strip()
+    reserved_names = {"CON", "PRN", "AUX", "NUL", "COM1", "LPT1"}
+    if clean_title.upper() in reserved_names:
+        clean_title = f"{clean_title}_file"
+    if not clean_title:
+        clean_title = "default_filename"
+    if not extension.startswith('.'):
+        extension = f".{extension}"
+    file_name = f"{clean_title}{extension}"
+    return file_name
+
+def extract_headers_and_content_from_list(html_list):
+    content_dict = {}
+    combined_html = ''.join(html_list)
+    soup = BeautifulSoup(combined_html, 'html.parser')
+    headers = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    for i, header in enumerate(headers):
+        header_tag = header.name
+        header_text = header.get_text()
+        if i + 1 < len(headers):
+            next_header = headers[i + 1]
+            content = ''
+            for sibling in header.next_siblings:
+                if sibling == next_header:
+                    break
+                if sibling.name:
+                    content += str(sibling)
+        else:
+            content = ''
+            for sibling in header.next_siblings:
+                if sibling.name:
+                    content += str(sibling)
+        content_dict[(header_tag, header_text)] = content 
+    return content_dict
+
+def extract_headers_and_content(article):
+    soup = BeautifulSoup(article, 'html.parser')
+    content_dict = {}
+    headers = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    for i, header in enumerate(headers):
+        header_tag = header.name
+        header_text = header.get_text()
+        if i + 1 < len(headers):
+            next_header = headers[i + 1]
+            content = ''
+            for sibling in header.next_siblings:
+                if sibling == next_header:
+                    break
+                if sibling.name:
+                    content += str(sibling)
+        else:
+            content = ''
+            for sibling in header.next_siblings:
+                if sibling.name:
+                    content += str(sibling) 
+        content_dict[(header_tag, header_text)] = content
+    return content_dict
+
+def extract_headers(article):
+    soup = BeautifulSoup(article, 'html.parser')
+    headers = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    header_contents = [(header.name, header.get_text()) for header in headers]
+    return header_contents
+
+def generate_toc(html_article):
+    headers = extract_headers(html_article)
+    toc = '<nav class="toc">\n<ul class="list-group">\n'
+    for tag, content in headers:
+        if tag == 'h1':
+            toc += f'<li class="list-group-item">{content}</li>\n'
+        elif tag == 'h2':
+            toc += f'<ul class="list-group">\n<li class="list-group-item ml-3">{content}</li>\n</ul>\n'
+        else:
+            toc += f'<ul class="list-group">\n<ul class="list-group">\n<li class="list-group-item ml-5">{content}</li>\n</ul>\n</ul>\n'
+    toc += '</ul>\n</nav>\n'
+    return toc
+
+def format_html_with_newlines(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    pretty_html = soup.prettify()
+    return pretty_html
+
+def modify_content(dict1, dict2, toc=None):
+    merged_html = ''
+    headers1 = list(dict1.keys())
+    headers2 = list(dict2.keys()) 
+    i, j = 0, 0
+    while i < len(headers1) and j < len(headers2):
+        header1, header2 = headers1[i], headers2[j]
+        if header1[0] == header2[0]:
+            merged_html += f'<{header1[0]}>{header1[1]}</{header1[0]}>\n'
+            merged_html += format_html_with_newlines(dict1[header1]) + '\n'
+            if header1[0] == "h1" and toc is not None:
+                merged_html += format_html_with_newlines(toc) + '\n'
+            merged_html += format_html_with_newlines(dict2[header2]) + '\n'   
+            i += 1
+            j += 1
+        elif header1 < header2:
+            merged_html += f'<{header1[0]}>{header1[1]}</{header1[0]}>\n'
+            merged_html += format_html_with_newlines(dict1[header1]) + '\n'
+            i += 1
+        else:
+            merged_html += f'<{header2[0]}>{header2[1]}</{header2[0]}>\n'
+            merged_html += format_html_with_newlines(dict2[header2]) + '\n'
+            j += 1
+    while i < len(headers1):
+        header1 = headers1[i]
+        merged_html += f'<{header1[0]}>{header1[1]}</{header1[0]}>\n'
+        merged_html += format_html_with_newlines(dict1[header1]) + '\n'
+        i += 1
+    while j < len(headers2):
+        header2 = headers2[j]
+        merged_html += f'<{header2[0]}>{header2[1]}</{header2[0]}>\n'
+        merged_html += format_html_with_newlines(dict2[header2]) + '\n'
+        j += 1
+    return merged_html
+
+def parse_multiline_string_to_array(multiline_string):
+    multiline_string = multiline_string.strip()
+    try:
+        if not multiline_string:
+            return []
+        json_array = json.loads(multiline_string)
+        cleaned_json_array = [obj for obj in json_array if obj]
+        if len(cleaned_json_array) != len(json_array):
+            return cleaned_json_array
+    except json.JSONDecodeError as e:
+        print(f"JSONDecodeError: {e}")
+        return []
+    return json_array
+
+def combine_json_arrays(json_arrays):
+    combined_array = []
+    for json_array in json_arrays:
+        combined_array.extend(json_array)
+
+    return combined_array
+
+def length_detection(text):
+    lines = text.split('\n')
+    return len([line for line in lines if line.strip()]) > 20
+
+def format_headers(segment):
+    headers = [f"{key}: {value}" for item in segment for key, value in item.items()]
+    return "\n".join(headers)
+
+def parse(text):
+    modified_string = text.replace("'", '')
+    modified_string = modified_string.replace('"', '')
+    modified_string = modified_string.replace("\\'", "")  # Replace escaped single quotes
+    modified_string = modified_string.replace('\\"', '')  # Replace escaped double quotes
+    modified_string = modified_string.replace("\\\\", "")
+    modified_string = modified_string.replace(r'{},', '')
+    modified_string = modified_string.replace('\n', '')
+    modified_string = modified_string.replace('6:', '6":"').replace('5:', '5":"').replace('4:', '4":"').replace('3:', '3":"').replace('2:', '2":"').replace('1:', '1":"').replace('p:', 'p":"').replace('g:', 'g":"').replace('i:', 'i":"')
+    modified_string = modified_string.replace('{', '{"').replace('}', '"}')
+    modified_string = json.loads(modified_string)
+    return modified_string
+
+class UnsplashImageDownloader:
+    def __init__(self, query):
+        self.querystring = {"query": f"{query}", "per_page": "20"}
+        self.headers = {"cookie": "ugid=aacdcdf3a2acebee349c2e196e621b975571725"}
+        self.url = "https://unsplash.com/napi/search/photos"
+        self.query = query
+
+    def get_total_images(self):
+        with requests.request("GET", self.url, headers=self.headers, params=self.querystring) as rs:
+            json_data = rs.json()
+        return json_data["total"]
+
+    def get_links(self, pages_, quality_):
+        all_links = []
+        for page in range(1, int(pages_) + 1):
+            self.querystring["page"] = f"{page}"
+
+            response = requests.request("GET", self.url, headers=self.headers, params=self.querystring)
+            response_json = response.json()
+            all_data = response_json["results"]
+
+            for data in all_data:
+                name = None
+                try:
+                    name = data["sponsorship"]["tagline"]
+                except:
+                    pass
+                if not name:
+                    try:
+                        name = data['alt_description']
+                    except:
+                        pass
+                if not name:
+                    name = data['description']
+                try:
+                    image_urls = data["urls"]
+                    required_link = image_urls[quality_]
+                    print("name     : ", name)
+                    print(f"url : {required_link}\n")
+                    all_links.append(required_link)
+                except:
+                    pass
+
+        return all_links
+
+
+def download_image(query, url, index, folder):
+    try:
+        with requests.get(url, timeout=10) as r:
+            filename = f"{query}"
+            with open(f"{folder}/{filename}.jpg", "wb") as f:
+                f.write(r.content)
+
+        print(f"image{index} downloaded......")
+    except:
+        pass
+
+
+def initialize_threads(query, urls, folder):
+    threads = []
+    index = 1
+    for url in urls:
+        t = threading.Thread(target=download_image, args=(query, url, index, folder))
+        index += 1
+        threads.append(t)
+
+    for thread in threads:
+        thread.start()
+
+    for thread in threads:
+        thread.join()
+
+
+def download(query, urls, folder):
+    initialize_threads(query, urls, folder)
+
+
+def download_unsplash_images(query):
+    folder = "images"
+    if not os.path.exists(folder):
+        os.mkdir(folder)
+
+    unsplash = UnsplashImageDownloader(query)
+    total_image = unsplash.get_total_images()
+    print("\ntotal images available : ", total_image)
+
+    if total_image == 0:
+        print("sorry, no image available for this search")
+        exit()
+
+    number_of_images = 1
+
+    if number_of_images == 0 or number_of_images > total_image:
+        print("not a valid number")
+        exit()
+
+    pages = float(number_of_images / 20)
+    if pages != int(pages):
+        pages = int(pages) + 1
+
+    quality = "full"
+    image_links = unsplash.get_links(pages, quality)
+    print(image_links[0])
+
+    image_list = list(([image_links[0]]))
+
+    start = time.time()
+    print("download started....\n")
+    download(query, image_list, folder)
+
+    print("\ndownloading finished.")
+    print("time took ", time.time() - start)
+
+def parse_full_text(url, title, lines = 14, splitcount = 3):
+    full_article = ""
+    big_arr = []
+
+    # grab all the main content with trafilatura
+    print(url)
+    downloaded = trafilatura.fetch_url(url)
+    website_text = trafilatura.extract(downloaded)
+
+    if website_text is None:
+        print("Failed to scrap, skipped this URL.")
+        return
+
+    if not count_newlines_exceeds_limit(website_text):
+        print(website_text)
+        print("Bad formatting, skipped this URL.")
+        return
+
+    if website_text:
+        # Split the article into segments
+        segments = split_article_into_segments(website_text, lines_per_segment=lines)
+
+        # Process each segment
+        article_array, segmented_json = process_segments(segments, title)
+
+        print(article_array)
+
+        if article_array:  # Ensure article_array is not empty or None
+            big_arr = split_on_every_nth_h2(article_array, n=splitcount)
+
+    for arr in big_arr:
+        full_article += consideration_test(arr, title, segmented_json)
+        full_article += "\n"
+
+    # remove unrelated role content and promotional parts
+    finale = article_checker(full_article)
+    links = []
+    txt_filename = f'{title}.txt'
+
+    # generate a structure with img and headers only
+    heads = extract_headers(finale)
+    ke = taoke(heads)
+    alt_texts = extract_alt_attributes(ke)
+    max_height = '500px'
+    ke = add_max_width_to_images(ke, max_height)
+    ke = update_image_sources(ke)
+    for alt in alt_texts:
+        download_unsplash_images(alt) 
+    file_path = clean_title(title, 'txt')
+    with open(file_path, 'w', encoding='utf-8') as file:
+        file.write(ke)
+
+    with open(file_path, 'r', encoding='utf-8') as file:
+        print(file.read())
+
+    # programming to put all back into one article
+    content = read_file(file_path)
+    dict1 = extract_headers_and_content_from_list(content)
+    dict2 = extract_headers_and_content(finale)
+    if len(extract_headers(finale)) > 5:
+        toc = generate_toc(finale)
+    else:
+        toc = None
+    modified_content = modify_content(dict1, dict2, toc)
+    file_path = clean_title(title, 'html')
+    write_file(file_path, modified_content)
+
 def url_check(news_items, max_retries=3, delay=5):
-    global prompt_count
-    prompt_count = prompt_count + 1
     prompt = f"""
     analyse these news and only select news that can interest hong kong people. return me a json object with each selected article's title, link and summary.
     filter them in strict manner, make sure all filtered news are hong kong people favored under the following criteria:
@@ -1213,8 +1097,6 @@ def url_check(news_items, max_retries=3, delay=5):
     raise ValueError("Max retries reached, unable to get a valid response.")
 
 def main():
-    global prompt_count
-    prompt_count = 0
     try:
         #parse_full_text("https://www.voyagefamily.com/ou-partir-vacances-france-famille_251/", "Top 10 des paradis où partir en vacances en France", lines, splitcount)
         #parse_full_text("https://www.travelandleisure.com/travel-tips/basic-french-words-phrases", "Basic French Words, Phrases, and Sayings Every Traveler Should Know", lines, splitcount)
@@ -1230,9 +1112,7 @@ def main():
                 existing_links = [line.strip() for line in existing_links]
             except FileNotFoundError:
                 with open(file_path, 'w') as file:
-                    # This creates the file if it doesn't exist
                     pass
-                # If the file does not exist, initialize an empty list
                 existing_links = []
 
             for new in news:
