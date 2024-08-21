@@ -885,43 +885,48 @@ class UnsplashImageDownloader:
         self.query = query
 
     def get_total_images(self):
-        with requests.request("GET", self.url, headers=self.headers, params=self.querystring) as rs:
-            json_data = rs.json()
-        return json_data["total"]
+        try:
+            with requests.get(self.url, headers=self.headers, params=self.querystring) as rs:
+                if rs.status_code == 403:
+                    print("Error: Access forbidden (403).")
+                    return 0  # Return 0 or handle the situation as needed
+                rs.raise_for_status()  # Raises an exception for other HTTP errors
+                json_data = rs.json()
+            return json_data.get("total", 0)
+        except requests.RequestException as e:
+            print(f"Error fetching total images: {e}")
+            return 0  # Continue the program even if there's an error
 
     def get_links(self, pages_, quality_):
         all_links = []
         for page in range(1, int(pages_) + 1):
-            self.querystring["page"] = f"{page}"
+            self.querystring["page"] = str(page)
 
-            response = requests.request("GET", self.url, headers=self.headers, params=self.querystring)
-            response_json = response.json()
-            all_data = response_json["results"]
+            try:
+                with requests.get(self.url, headers=self.headers, params=self.querystring) as response:
+                    if response.status_code == 403:
+                        print("Error: Access forbidden (403).")
+                        return all_links  # Exit the method gracefully if 403
+                    response.raise_for_status()  # Raises an exception for other HTTP errors
+                    response_json = response.json()
+                    all_data = response_json.get("results", [])
 
-            for data in all_data:
-                name = None
-                try:
-                    name = data["sponsorship"]["tagline"]
-                except:
-                    pass
-                if not name:
-                    try:
-                        name = data['alt_description']
-                    except:
-                        pass
-                if not name:
-                    name = data['description']
-                try:
-                    image_urls = data["urls"]
-                    required_link = image_urls[quality_]
-                    print("name     : ", name)
-                    print(f"url : {required_link}\n")
-                    all_links.append(required_link)
-                except:
-                    pass
+                    for data in all_data:
+                        name = (data.get("sponsorship", {}).get("tagline") or
+                                data.get("alt_description") or
+                                data.get("description") or "No Name")
+
+                        image_urls = data.get("urls", {})
+                        required_link = image_urls.get(quality_)
+                        if required_link:
+                            print(f"name: {name}")
+                            print(f"url: {required_link}\n")
+                            all_links.append(required_link)
+            except requests.RequestException as e:
+                print(f"Error fetching links on page {page}: {e}")
+                break  # Continue to next iteration or return an empty list if needed
 
         return all_links
-
 
 def download_image(query, url, index, folder):
     try:
@@ -961,17 +966,17 @@ def download_unsplash_images(query):
 
     unsplash = UnsplashImageDownloader(query)
     total_image = unsplash.get_total_images()
-    print("\ntotal images available : ", total_image)
+    print(f"\nTotal images available: {total_image}")
 
     if total_image == 0:
-        print("sorry, no image available for this search")
-        exit()
+        print("Sorry, no image available for this search")
+        return  # Gracefully return without terminating the main program
 
     number_of_images = 1
 
     if number_of_images == 0 or number_of_images > total_image:
-        print("not a valid number")
-        exit()
+        print("Not a valid number")
+        return  # Gracefully return without terminating the main program
 
     pages = float(number_of_images / 20)
     if pages != int(pages):
@@ -979,16 +984,21 @@ def download_unsplash_images(query):
 
     quality = "full"
     image_links = unsplash.get_links(pages, quality)
+    
+    if not image_links:
+        print("No image links found")
+        return  # Gracefully return without terminating the main program
+
     print(image_links[0])
 
     image_list = list(([image_links[0]]))
 
     start = time.time()
-    print("download started....\n")
+    print("Download started....\n")
     download(query, image_list, folder)
 
-    print("\ndownloading finished.")
-    print("time took ", time.time() - start)
+    print("\nDownloading finished.")
+    print("Time took", time.time() - start)
 
 def parse_full_text(url, title, lines = 14, splitcount = 3):
     full_article = ""
