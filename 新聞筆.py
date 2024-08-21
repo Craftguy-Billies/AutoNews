@@ -312,8 +312,9 @@ dict_chain = NvidiaLLMChain(
 )
 
 rss_urls = [
-    'https://www.scmp.com/rss/2/feed'
-    # Add more RSS feed URLs here
+    'https://www.scmp.com/rss/2/feed',
+    'https://www.scmp.com/rss/321716/feed',
+    'https://www.scmp.com/rss/321720/feed'
 ]
 
 def fetch_news(rss_urls):
@@ -1000,6 +1001,61 @@ def download_unsplash_images(query):
     print("\nDownloading finished.")
     print("Time took", time.time() - start)
 
+def bloggifier(article, max_retries=3, retry_delay=5):
+    full_article = ""
+    processes = split_article_into_segments(article, lines_per_segment=30)
+    for i, process in enumerate(processes):
+        msg = ""
+        if i > 0:
+            msg = "NOTE: this is not the first segment of the whole news. do not give <h1> tag."
+        prompt = f"""
+        now i have a piece of news article. image tags, paragraph tags, header tags, are all set.
+        now i want to turn this piece of news article into blog form. 
+        combine paragraphs that can be linked together, give headers but in a very very subtle amoount. 
+        rewrite the <h1> title into clickbait blog post without exaggerations needed.
+        you need not to do any translations.
+        the news article:
+        {process}
+
+        {msg}
+
+        output in traditional chinese, in html format. NO premable and explanations.
+        """
+
+        retries = 0
+        success = False
+
+        while retries < max_retries and not success:
+            try:
+                print(prompt)
+                completion = client.chat.completions.create(
+                    model="meta/llama-3.1-405b-instruct",
+                    messages=[{"role": "user", "content": prompt.strip()}],
+                    temperature=0.2,
+                    top_p=0.7,
+                    max_tokens=8192,
+                    stream=True
+                )
+
+                for chunk in completion:
+                    if chunk.choices[0].delta.content is not None:
+                        content = chunk.choices[0].delta.content
+                        print(content, end="")
+                        full_article += content
+
+                success = True
+
+            except Exception as e:
+                print(f"Error: {e}")
+                retries += 1
+                if retries < max_retries:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    print("Max retries reached. Moving to next segment.")
+
+    return full_article
+
 def parse_full_text(url, title, lines = 14, splitcount = 3):
     full_article = ""
     big_arr = []
@@ -1066,6 +1122,9 @@ def parse_full_text(url, title, lines = 14, splitcount = 3):
     modified_content = modify_content(dict1, dict2, toc)
     file_path = clean_title(title, 'html')
     write_file(file_path, modified_content)
+    bloggified = bloggifier(modified_content)
+    blog_path = clean_title(f"{title}_blog", 'html')
+    write_file(blog_path, bloggified)
 
 def url_check(news_items, max_retries=3, delay=5):
     prompt = f"""
@@ -1111,7 +1170,6 @@ def main():
         #parse_full_text("https://www.voyagefamily.com/ou-partir-vacances-france-famille_251/", "Top 10 des paradis où partir en vacances en France", lines, splitcount)
         #parse_full_text("https://www.travelandleisure.com/travel-tips/basic-french-words-phrases", "Basic French Words, Phrases, and Sayings Every Traveler Should Know", lines, splitcount)
         #parse_full_text("https://medium.com/pythons-gurus/python-web-scraping-best-libraries-and-practices-86344aa3f703", "Python Web Scraping: Best Libraries and Practices", lines, splitcount)
-        #parse_full_text(r"https://www.rfi.fr/tw/20180425-%E5%88%A5%E6%B4%9B%E9%9F%8B%E6%97%A5%E8%87%AA%E7%84%B6%E4%BF%9D%E8%AD%B7%E5%8D%80", "別洛韋日自然保護區", lines, splitcount)
         news = url_check(news_items)
         print(news)
         file_path = "news.txt"
