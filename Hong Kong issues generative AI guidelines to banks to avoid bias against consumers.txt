@@ -1,0 +1,3 @@
+<h1>香港金融管理局發出指引，要求銀行使用生成式人工智能時避免偏差</h1>
+<img alt="bank regulation" src="images/bank regulation.jpg" style="max-width: 500px;"/>
+<img alt="artificial intelligence" src="images/artificial intelligence.jpg" style="max-width: 500px;"/>
