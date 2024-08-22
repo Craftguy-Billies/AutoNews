@@ -314,6 +314,7 @@ dict_chain = NvidiaLLMChain(
 )
 
 rss_urls = [
+    'https://tokyocheapo.com/feed/',
     'https://www.scmp.com/rss/2/feed',
     'https://www.scmp.com/rss/321716/feed',
     'https://www.scmp.com/rss/321720/feed'
