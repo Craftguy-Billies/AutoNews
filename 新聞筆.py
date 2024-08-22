@@ -21,6 +21,8 @@ DEBUG = False
 lines = 14
 splitcount = 3  # recommend 3 or below, otherwise article translate may stop without a warning
 
+model = "meta/llama-3.1-405b-instruct"
+
 client = OpenAI(
   base_url = "https://integrate.api.nvidia.com/v1",
   api_key = "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"
@@ -58,7 +60,7 @@ def extract_json_content(input_string):
 # web search part
 def nvidia_llama_completion(prompt):
     completion = client.chat.completions.create(
-        model="meta/llama-3.1-405b-instruct",
+        model=model,
         messages=[{"role": "user", "content": prompt.strip()}],
         temperature=0.2,
         top_p=0.7,
@@ -380,7 +382,7 @@ def check_dict(var_name, seg_dict):
     else:
         return ""
 
-def process_segments(segments, title, max_retries=3):
+def process_segments(segments, title, model, max_retries=3):
     article_array = []
     segmented_json = {}
     context = {}
@@ -394,6 +396,7 @@ def process_segments(segments, title, max_retries=3):
         I divided a big article into small segments for you to process. I will give you the previous segment you have processed (if any), and another segment for you to process now.
         The segment is an array that contains a few lines in a big article, without defining any tags.
         Return me an array object with header tags (h1, h2, h3, etc.), p, li (HTML list item if the first character is a bullet point "-") and img (if that sentence looks more like an image caption, not paragraph) tags labeled in the original article order for the new segment only, using AI.
+        use triple quotes for all json object items.
         Each line should be one JSON object storing a key-value pair.
         Turn all active voice sentences into passive voice. Remember to change the subjects in the sentence.
         Do not reply with any other things other than the array so I can do further processing.
@@ -405,6 +408,7 @@ def process_segments(segments, title, max_retries=3):
         {segment}
 
         Again: do not reply with any other things except a proper array format reply.
+        use triple quotes for all json object items. each json object has only ONE key-value pair
         No premable, no explanation.
         Do not merge multiple lines.
         """
@@ -418,7 +422,7 @@ def process_segments(segments, title, max_retries=3):
         while retries < max_retries and not success:
             try:
                 completion = client.chat.completions.create(
-                    model="meta/llama-3.1-405b-instruct",
+                    model=model,
                     messages=[{"role": "user", "content": prompt.strip()}],
                     temperature=0.2,
                     top_p=0.7,
@@ -443,7 +447,7 @@ def process_segments(segments, title, max_retries=3):
             print(f"Failed to process segment after {max_retries} retries.")
             continue
 
-        refined = refine_response(response_array, p_dict)
+        refined = refine_response(response_array, p_dict, model)
         if refined is not None:
             segmented_dict = {}
             for word, prompt in refined.items():
@@ -461,7 +465,7 @@ def process_segments(segments, title, max_retries=3):
     return article_array, segmented_json
 
 # Define the refinement prompt
-def refine_response(response_json, translated):
+def refine_response(response_json, translated, model):
     prompt = f"""
     You have processed the segment and returned a JSON array. Now, I need you to refine this output by ensuring it follows all the instructions properly.
 
@@ -488,7 +492,7 @@ def refine_response(response_json, translated):
     """
 
     completion = client.chat.completions.create(
-            model="meta/llama-3.1-405b-instruct",
+            model=model,
             messages=[{"role": "user", "content": prompt.strip()}],
             temperature=0.2,
             top_p=0.7,
@@ -533,7 +537,7 @@ def split_on_every_nth_h2(json_array, n=2):
 
     return all_subarrays
 
-def consideration_test(headers, title, dictionary):
+def consideration_test(headers, title, dictionary, model):
     full_article = ""
     prompt = f"""
     以下的array包括了h1, h2, p, img 和 li 等的tag. 文章的大標題是{title}。給我整理成一篇文章。改寫並翻譯成香港語氣的中文版本。
@@ -557,7 +561,7 @@ def consideration_test(headers, title, dictionary):
 
     print(prompt)
     completion = client.chat.completions.create(
-        model="meta/llama-3.1-405b-instruct",
+        model=model,
         messages=[{"role": "user", "content": prompt.strip()}],
         temperature=0.2,
         top_p=0.7,
@@ -573,7 +577,7 @@ def consideration_test(headers, title, dictionary):
 
     return full_article
 
-def article_checker(article, max_retries=3, retry_delay=5):
+def article_checker(article, model, max_retries=3, retry_delay=5):
     full_article = ""
     processes = split_article_into_segments(article, lines_per_segment=25)
     for process in processes:
@@ -604,7 +608,7 @@ def article_checker(article, max_retries=3, retry_delay=5):
             try:
                 print(prompt)
                 completion = client.chat.completions.create(
-                    model="meta/llama-3.1-405b-instruct",
+                    model=model,
                     messages=[{"role": "user", "content": prompt.strip()}],
                     temperature=0.2,
                     top_p=0.7,
@@ -637,7 +641,7 @@ def extract_headers(article):
     header_contents = [(header.name, header.get_text()) for header in headers]
     return header_contents
 
-def taoke(headers):
+def taoke(headers, model):
     prompt = f"""
     我會給你一篇文章的header tags。幫我把這些tags中中文辭不合理的部分改寫，非中文的部分就不要改動或翻譯。然後返回一個相同的html structure給我即可。
     headers: {headers}
@@ -649,7 +653,7 @@ def taoke(headers):
 
     print(prompt)
     completion = client.chat.completions.create(
-        model="meta/llama-3.1-405b-instruct",
+        model=model,
         messages=[{"role": "user", "content": prompt.strip()}],
         temperature=0.2,
         top_p=0.7,
@@ -678,7 +682,7 @@ def taoke(headers):
     the_ke = ""
 
     completion = client.chat.completions.create(
-        model="meta/llama-3.1-405b-instruct",
+        model=model,
         messages=[{"role": "user", "content": ke.strip()}],
         temperature=0.2,
         top_p=0.7,
@@ -867,14 +871,14 @@ def format_headers(segment):
 
 def parse(text):
     modified_string = text.replace("'", '')
-    modified_string = modified_string.replace('"', '')
-    modified_string = modified_string.replace("\\'", "")  # Replace escaped single quotes
-    modified_string = modified_string.replace('\\"', '')  # Replace escaped double quotes
+    modified_string = modified_string.replace('"""', '"')
+    modified_string = modified_string.replace("'''", '"')
+    modified_string = modified_string.replace("\\'", "")
+    modified_string = modified_string.replace('\\"', '') 
     modified_string = modified_string.replace("\\\\", "")
     modified_string = modified_string.replace(r'{},', '')
     modified_string = modified_string.replace('\n', '')
-    modified_string = modified_string.replace('6:', '6":"').replace('5:', '5":"').replace('4:', '4":"').replace('3:', '3":"').replace('2:', '2":"').replace('1:', '1":"').replace('p:', 'p":"').replace('g:', 'g":"').replace('i:', 'i":"')
-    modified_string = modified_string.replace('{', '{"').replace('}', '"}')
+    modified_string = modified_string.replace('h6:', '"h6":').replace('h5:', '"h5":').replace('h4:', '"h4":').replace('h3:', '"h3":').replace('h2:', '"h2":').replace('h1:', '"h1":').replace('{p:', '{"p":').replace('img:', '"img":').replace('li:', '"li":').replace('{ p:', '{"p":').replace('{  p:', '{"p":').replace('{ p :', '{"p":').replace('{p :', '{"p":').replace('{  p :', '{"p":')
     modified_string = json.loads(modified_string)
     return modified_string
 
@@ -1001,7 +1005,7 @@ def download_unsplash_images(query):
     print("\nDownloading finished.")
     print("Time took", time.time() - start)
 
-def bloggifier(article, max_retries=3, retry_delay=5):
+def bloggifier(article, model, max_retries=3, retry_delay=5):
     full_article = ""
     processes = split_article_into_segments(article, lines_per_segment=30)
     for i, process in enumerate(processes):
@@ -1029,7 +1033,7 @@ def bloggifier(article, max_retries=3, retry_delay=5):
             try:
                 print(prompt)
                 completion = client.chat.completions.create(
-                    model="meta/llama-3.1-405b-instruct",
+                    model=model,
                     messages=[{"role": "user", "content": prompt.strip()}],
                     temperature=0.2,
                     top_p=0.7,
@@ -1056,7 +1060,7 @@ def bloggifier(article, max_retries=3, retry_delay=5):
 
     return full_article
 
-def parse_full_text(url, title, lines = 14, splitcount = 3):
+def parse_full_text(url, title, model, lines = 14, splitcount = 3):
     full_article = ""
     big_arr = []
 
@@ -1079,7 +1083,7 @@ def parse_full_text(url, title, lines = 14, splitcount = 3):
         segments = split_article_into_segments(website_text, lines_per_segment=lines)
 
         # Process each segment
-        article_array, segmented_json = process_segments(segments, title)
+        article_array, segmented_json = process_segments(segments, title, model)
 
         print(article_array)
 
@@ -1087,17 +1091,15 @@ def parse_full_text(url, title, lines = 14, splitcount = 3):
             big_arr = split_on_every_nth_h2(article_array, n=splitcount)
 
     for arr in big_arr:
-        full_article += consideration_test(arr, title, segmented_json)
+        full_article += consideration_test(arr, title, segmented_json, model)
         full_article += "\n"
 
     # remove unrelated role content and promotional parts
-    finale = article_checker(full_article)
-    links = []
-    txt_filename = f'{title}.txt'
+    finale = article_checker(full_article, model)
 
     # generate a structure with img and headers only
     heads = extract_headers(finale)
-    ke = taoke(heads)
+    ke = taoke(heads, model)
     alt_texts = extract_alt_attributes(ke)
     max_height = '500px'
     ke = add_max_width_to_images(ke, max_height)
@@ -1116,17 +1118,17 @@ def parse_full_text(url, title, lines = 14, splitcount = 3):
     dict1 = extract_headers_and_content_from_list(content)
     dict2 = extract_headers_and_content(finale)
     if len(extract_headers(finale)) > 5:
-        toc = generate_toc(finale)
+        toc = generate_toc(finale, model)
     else:
         toc = None
     modified_content = modify_content(dict1, dict2, toc)
     file_path = clean_title(title, 'html')
     write_file(file_path, modified_content)
-    bloggified = bloggifier(modified_content)
+    bloggified = bloggifier(modified_content, model)
     blog_path = clean_title(f"{title}_blog", 'html')
     write_file(blog_path, bloggified)
 
-def url_check(news_items, max_retries=3, delay=5):
+def url_check(news_items, model, max_retries=3, delay=5):
     prompt = f"""
     analyse these news and only select news that can interest hong kong people. return me a json object with each selected article's title, link and summary.
     filter them in strict manner, make sure all filtered news are hong kong people favored under the following criteria:
@@ -1143,7 +1145,7 @@ def url_check(news_items, max_retries=3, delay=5):
     for attempt in range(max_retries):
         try:
             completion = client.chat.completions.create(
-                model="meta/llama-3.1-405b-instruct",
+                model=model,
                 messages=[{"role": "user", "content": prompt.strip()}],
                 temperature=0.2,
                 top_p=0.7,
@@ -1170,7 +1172,8 @@ def main():
         #parse_full_text("https://www.voyagefamily.com/ou-partir-vacances-france-famille_251/", "Top 10 des paradis où partir en vacances en France", lines, splitcount)
         #parse_full_text("https://www.travelandleisure.com/travel-tips/basic-french-words-phrases", "Basic French Words, Phrases, and Sayings Every Traveler Should Know", lines, splitcount)
         #parse_full_text("https://medium.com/pythons-gurus/python-web-scraping-best-libraries-and-practices-86344aa3f703", "Python Web Scraping: Best Libraries and Practices", lines, splitcount)
-        news = url_check(news_items)
+        model = "meta/llama-3.1-405b-instruct"
+        news = url_check(news_items, model)
         print(news)
         file_path = "news.txt"
         for new in news:
@@ -1185,7 +1188,7 @@ def main():
 
             for new in news:
                 if new['link'] not in existing_links:
-                    parse_full_text(new['link'], new['title'], lines, splitcount)
+                    parse_full_text(new['link'], new['title'], model, lines, splitcount)
                     with open(file_path, 'a') as file:
                         file.write(new['link'] + '\n')
                 else:
