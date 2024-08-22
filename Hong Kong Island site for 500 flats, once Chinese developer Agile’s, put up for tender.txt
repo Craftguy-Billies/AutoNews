@@ -1,0 +1,3 @@
+<h1>香港島東區一幅可建500伙的土地，以招標方式出售</h1>
+<img alt="Hong Kong Island" src="images/Hong Kong Island.jpg" style="max-width: 500px;"/>
+<img alt="Land for Sale" src="images/Land for Sale.jpg" style="max-width: 500px;"/>

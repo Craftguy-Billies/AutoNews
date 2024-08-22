@@ -1,0 +1,6 @@
+<h1>香港奧運英雄凱旋巡遊全城</h1>
+<img alt="Hong Kong Parade" src="images/Hong Kong Parade.jpg" style="max-width: 500px;"/>
+<img alt="Olympic Heroes" src="images/Olympic Heroes.jpg" style="max-width: 500px;"/>
+<h2>李家超讚揚香港運動員堅毅不屈的精神</h2>
+<img alt="Lee Ka Chiu Speech" src="images/Lee Ka Chiu Speech.jpg" style="max-width: 500px;"/>
+<img alt="Hong Kong Athletes" src="images/Hong Kong Athletes.jpg" style="max-width: 500px;"/>

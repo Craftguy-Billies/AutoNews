@@ -1,0 +1,3 @@
+<h1>香港英基學校集團將在西貢開設幼兒園</h1>
+<img alt="hong kong school" src="images/hong kong school.jpg" style="max-width: 500px;"/>
+<img alt="kindergarten kids" src="images/kindergarten kids.jpg" style="max-width: 500px;"/>

@@ -1,0 +1,3 @@
+<h1>香港劍擊選手爆料海外比賽費用引發爭議</h1>
+<img alt="Fencing Match" src="images/Fencing Match.jpg" style="max-width: 500px;"/>
+<img alt="Hong Kong Athlete" src="images/Hong Kong Athlete.jpg" style="max-width: 500px;"/>
